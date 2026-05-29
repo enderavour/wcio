@@ -1,0 +1,5 @@
+.clangd
+.zed/
+bin/
+wslib.dSYM/
+libwcio.dylib
