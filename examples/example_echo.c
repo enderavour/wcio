@@ -21,7 +21,7 @@ int32_t main()
     char *res = wcio_recv(ctx, &msg_len);
     printf("%s\n", res);
     free(res);
-    if (wcio_close(ctx) == 0)
+    if (WCIO_IS_OK(wcio_close(ctx)))
         printf("Received closing frame, closing connection\n");
     return 0;
 }

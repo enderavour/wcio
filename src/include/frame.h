@@ -22,7 +22,9 @@ typedef enum _opcode
     PONG = 0xA
 } wcio_header_opcode;
 
+// Builds WebSocket frame from the provided parameters.
 wcio_ws_frame *wcio_build_ws_frame(uint8_t is_final, wcio_header_opcode opcode, uint8_t *payload, size_t payload_size, size_t *resulting_frame_size);
+// Converts built frame into raw byte array.
 uint8_t *wcio_ws_frame_to_bytes(wcio_ws_frame *frame, size_t frame_size);
 
 #endif

@@ -103,7 +103,7 @@ wcio_status wcio_connect(wcio_ctx **out_ctx, wcio_connect_info *conn_info)
     uint8_t *recvbuf = (uint8_t*)malloc(WCIO_HANDSHAKE_RECV_BUFFER_SIZE);
     recvbuf[WCIO_HANDSHAKE_RECV_BUFFER_SIZE - 1] = 0;
 
-    int32_t recv_size = recv(sfd, recvbuf, WCIO_RECV_BUFFER_SIZE - 1, 0);
+    int32_t recv_size = recv(sfd, recvbuf, WCIO_HANDSHAKE_RECV_BUFFER_SIZE - 1, 0);
 
     if (recv_size == -1)
     {
@@ -162,7 +162,7 @@ wcio_status wcio_connect(wcio_ctx **out_ctx, wcio_connect_info *conn_info)
     return WCIO_STATUS_OK;
 }
 
-int32_t wcio_close(wcio_ctx *ctx)
+wcio_status wcio_close(wcio_ctx *ctx)
 {
     size_t resulting_size;
     uint16_t close_code = htons(1000);
@@ -179,12 +179,15 @@ int32_t wcio_close(wcio_ctx *ctx)
             free(close_frame);
             freeaddrinfo(ctx->addr);
             close(ctx->socket_fd);
-            return 0;
+            return WCIO_STATUS_OK;
         }
     }
     freeaddrinfo(ctx->addr);
     close(ctx->socket_fd);
-    return -1;
+    return (wcio_status){
+        .code = -1,
+        .error_msg = "Close frame was not received from the endpoint, but the connection was still closed"
+    };
 }
 
 static wcio_write_result wcio_write(wcio_ctx *ctx, uint8_t *data, size_t data_size)
@@ -206,59 +209,56 @@ static wcio_write_result wcio_write(wcio_ctx *ctx, uint8_t *data, size_t data_si
     };
 }
 
-void wcio_send_text(wcio_ctx *ctx, const char *text)
+wcio_status wcio_send_text(wcio_ctx *ctx, const char *text)
 {
     size_t payload_size = strlen(text);
     size_t resulting_frame_size = 0;
 
     if (payload_size > WCIO_FRAGMENT_SIZE)
     {
-        size_t chunk_count = 10;
-        size_t chunk_size = payload_size / chunk_count;
-        size_t remainder = payload_size % chunk_count;
+        size_t chunk_size = WCIO_FRAGMENT_SIZE;
 
-        int32_t chunk_ptr = 0;
-        size_t current_size = chunk_size + (remainder ? 1 : 0);
+        size_t chunk_ptr = 0;
 
-        uint8_t *chunk = (uint8_t*)malloc(current_size);
+        size_t first_size = chunk_size;
+        uint8_t *chunk = (uint8_t*)malloc(first_size);
 
-        memcpy(chunk, text + (chunk_size * chunk_ptr), current_size);
+        memcpy(chunk, text, first_size);
 
         wcio_ws_frame *frame =
-            wcio_build_ws_frame(0, TEXT_FRAME, chunk, current_size, &resulting_frame_size);
+            wcio_build_ws_frame(0, TEXT_FRAME, chunk, first_size, &resulting_frame_size);
 
         uint8_t *bytes = wcio_ws_frame_to_bytes(frame, resulting_frame_size);
         wcio_write(ctx, bytes, resulting_frame_size);
+
         free(bytes);
         free(chunk);
 
-        chunk_ptr++;
+        chunk_ptr += first_size;
 
-        for (int32_t i = 0; i < 8; ++i)
+        while (payload_size - chunk_ptr > chunk_size)
         {
-            size_t start = chunk_size * chunk_ptr;
-            uint8_t *chunk = (uint8_t*)malloc(chunk_size);
+            uint8_t *mid = (uint8_t*)malloc(chunk_size);
 
-            memcpy(chunk, text + start, chunk_size);
+            memcpy(mid, text + chunk_ptr, chunk_size);
 
             wcio_ws_frame *frame =
-                wcio_build_ws_frame(0, 0, chunk, chunk_size, &resulting_frame_size);
+                wcio_build_ws_frame(0, 0, mid, chunk_size, &resulting_frame_size);
 
             uint8_t *bytes = wcio_ws_frame_to_bytes(frame, resulting_frame_size);
             wcio_write(ctx, bytes, resulting_frame_size);
 
             free(bytes);
-            free(chunk);
+            free(mid);
 
-            chunk_ptr++;
+            chunk_ptr += chunk_size;
         }
 
-        size_t start = chunk_size * chunk_ptr;
-        size_t last_size = payload_size - start;
+        size_t last_size = payload_size - chunk_ptr;
 
         uint8_t *last_chunk = (uint8_t*)malloc(last_size);
 
-        memcpy(last_chunk, text + start, last_size);
+        memcpy(last_chunk, text + chunk_ptr, last_size);
 
         wcio_ws_frame *last_frame =
             wcio_build_ws_frame(1, 0, last_chunk, last_size, &resulting_frame_size);
@@ -266,10 +266,12 @@ void wcio_send_text(wcio_ctx *ctx, const char *text)
         uint8_t *last_bytes =
             wcio_ws_frame_to_bytes(last_frame, resulting_frame_size);
 
-        wcio_write(ctx, last_bytes, resulting_frame_size);
+        wcio_write_result res = wcio_write(ctx, last_bytes, resulting_frame_size);
 
         free(last_bytes);
         free(last_chunk);
+
+        return res.status;
     }
     else
     {
@@ -279,10 +281,94 @@ void wcio_send_text(wcio_ctx *ctx, const char *text)
         uint8_t *bytes =
             wcio_ws_frame_to_bytes(frame, resulting_frame_size);
 
+        wcio_write_result res = wcio_write(ctx, bytes, resulting_frame_size);
+
+        free(bytes);
+        return res.status;
+    }
+
+    return WCIO_STATUS_OK;
+}
+
+wcio_status wcio_send_binary(wcio_ctx *ctx, uint8_t *data, size_t data_len)
+{
+    size_t payload_size = data_len;
+    size_t resulting_frame_size = 0;
+
+    if (payload_size > WCIO_FRAGMENT_SIZE)
+    {
+        size_t chunk_size = WCIO_FRAGMENT_SIZE;
+
+        size_t chunk_ptr = 0;
+
+        size_t first_size = chunk_size;
+        uint8_t *chunk = (uint8_t*)malloc(first_size);
+
+        memcpy(chunk, data, first_size);
+
+        wcio_ws_frame *frame =
+            wcio_build_ws_frame(0, BINARY_FRAME, chunk, first_size, &resulting_frame_size);
+
+        uint8_t *bytes = wcio_ws_frame_to_bytes(frame, resulting_frame_size);
         wcio_write(ctx, bytes, resulting_frame_size);
 
         free(bytes);
+        free(chunk);
+
+        chunk_ptr += first_size;
+
+        while (payload_size - chunk_ptr > chunk_size)
+        {
+            uint8_t *mid = (uint8_t*)malloc(chunk_size);
+
+            memcpy(mid, data + chunk_ptr, chunk_size);
+
+            wcio_ws_frame *frame =
+                wcio_build_ws_frame(0, 0, mid, chunk_size, &resulting_frame_size);
+
+            uint8_t *bytes = wcio_ws_frame_to_bytes(frame, resulting_frame_size);
+            wcio_write(ctx, bytes, resulting_frame_size);
+
+            free(bytes);
+            free(mid);
+
+            chunk_ptr += chunk_size;
+        }
+
+        size_t last_size = payload_size - chunk_ptr;
+
+        uint8_t *last_chunk = (uint8_t*)malloc(last_size);
+
+        memcpy(last_chunk, data + chunk_ptr, last_size);
+
+        wcio_ws_frame *last_frame =
+            wcio_build_ws_frame(1, 0, last_chunk, last_size, &resulting_frame_size);
+
+        uint8_t *last_bytes =
+            wcio_ws_frame_to_bytes(last_frame, resulting_frame_size);
+
+        wcio_write_result res = wcio_write(ctx, last_bytes, resulting_frame_size);
+
+        free(last_bytes);
+        free(last_chunk);
+
+        return res.status;
     }
+    else
+    {
+        wcio_ws_frame *frame =
+            wcio_build_ws_frame(1, BINARY_FRAME, data, payload_size, &resulting_frame_size);
+
+        uint8_t *bytes =
+            wcio_ws_frame_to_bytes(frame, resulting_frame_size);
+
+        wcio_write_result res = wcio_write(ctx, bytes, resulting_frame_size);
+
+        free(bytes);
+        return res.status;
+    }
+
+    return WCIO_STATUS_OK;
 }
 
 wcio_read_result wcio_read(wcio_ctx *ctx, size_t read_size, uint8_t *buffer)
