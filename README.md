@@ -32,3 +32,4 @@ make examples
 - wcio_send_binary was implemented
 - More functions were rewritten using ws_status as return value.
 - Added SSL support and encrypted connection.
+- Added example with encrypted connection.

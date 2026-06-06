@@ -7,7 +7,7 @@ int32_t main()
 {
     wcio_connect_info conn_info = {
         .addr = "websocket-echo.com",
-        .port = 443
+        .port = 443 // Just specify 443 port
     };
     wcio_ctx *ctx;
     wcio_status stat = wcio_connect(&ctx, &conn_info);
