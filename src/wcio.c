@@ -13,6 +13,7 @@
 #include <errno.h>
 #include <stdio.h>
 #include <arpa/inet.h>
+#include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <stdlib.h>
 #include <time.h>
@@ -23,21 +24,16 @@
 #include <libkern/OSByteOrder.h>
 #define be64toh(x) OSSwapBigToHostInt64(x)
 
-//#ifdef WCIO_ENABLE_OPENSSL
-#include <openssl/ssl.h>
-//#endif
 
 #endif
 
 struct _wcio_ctx
 {
     wcio_connect_info conn_info;
-//#ifdef WCIO_ENABLE_OPENSSL
     SSL_CTX *ssl_ctx;
     BIO *ssl_bio;
     SSL *ssl;
     SSL_METHOD *method;
-//#endif
     struct addrinfo *addr;
     int32_t socket_fd;
     uint8_t is_encrypted; // if SSL is enabled
@@ -178,7 +174,6 @@ wcio_status wcio_connect(wcio_ctx **out_ctx, wcio_connect_info *conn_info)
         *out_ctx = ctx;
         return WCIO_STATUS_OK;
     }
-//#ifdef WCIO_ENABLE_OPENSSL
     else if (conn_info->port == 443)
     {
         ctx->is_encrypted = 1;
@@ -334,7 +329,6 @@ wcio_status wcio_connect(wcio_ctx **out_ctx, wcio_connect_info *conn_info)
         *out_ctx = ctx;
         return WCIO_STATUS_OK;
     }
-//#endif
 }
 
 wcio_status wcio_close(wcio_ctx *ctx)
