@@ -3,6 +3,7 @@
 #include "include/status.h"
 #include "include/base64.h"
 #include "include/definitions.h"
+#include "include/wciossl.h"
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <netdb.h>
@@ -12,21 +13,34 @@
 #include <errno.h>
 #include <stdio.h>
 #include <arpa/inet.h>
+#include <openssl/err.h>
 #include <stdlib.h>
 #include <time.h>
+
 
 #ifdef __APPLE__
 
 #include <libkern/OSByteOrder.h>
 #define be64toh(x) OSSwapBigToHostInt64(x)
 
+//#ifdef WCIO_ENABLE_OPENSSL
+#include <openssl/ssl.h>
+//#endif
+
 #endif
 
 struct _wcio_ctx
 {
     wcio_connect_info conn_info;
-    int32_t socket_fd;
+//#ifdef WCIO_ENABLE_OPENSSL
+    SSL_CTX *ssl_ctx;
+    BIO *ssl_bio;
+    SSL *ssl;
+    SSL_METHOD *method;
+//#endif
     struct addrinfo *addr;
+    int32_t socket_fd;
+    uint8_t is_encrypted; // if SSL is enabled
 };
 
 static wcio_write_result wcio_write(wcio_ctx *ctx, uint8_t *dat, size_t data_sizes);
@@ -37,129 +51,290 @@ wcio_status wcio_connect(wcio_ctx **out_ctx, wcio_connect_info *conn_info)
     srand(time(NULL));
 
     wcio_ctx *ctx = (wcio_ctx*)malloc(sizeof(wcio_ctx));
+    ctx->is_encrypted = 0;
 
-    int32_t sfd = socket(AF_INET, SOCK_STREAM, 0);
-    if (sfd == -1)
+    if (conn_info->port == 80)
     {
-        return (wcio_status){
-            .code = errno,
-            .error_msg = strerror(errno)
-        };
-    }
+        int32_t sfd = socket(AF_INET, SOCK_STREAM, 0);
+        if (sfd == -1)
+        {
+            return (wcio_status){
+                .code = errno,
+                .error_msg = strerror(errno)
+            };
+        }
 
-    struct addrinfo hints = {0}, *res;
+        struct addrinfo hints = {0}, *res;
 
-    // Conversion of integer valued port into the string
-    char s_port[10] = {0};
-    sprintf(s_port, "%d", conn_info->port);
+        // Conversion of integer valued port into the string
+        char s_port[10] = {0};
+        sprintf(s_port, "%d", conn_info->port);
 
-    int32_t code = getaddrinfo(conn_info->addr, s_port, &hints, &res);
-    if (code != 0)
-    {
-        free(ctx);
-        close(sfd);
-        return (wcio_status){
-            .code = errno,
-            .error_msg = strerror(errno)
-        };
-    }
+        int32_t code = getaddrinfo(conn_info->addr, s_port, &hints, &res);
+        if (code != 0)
+        {
+            free(ctx);
+            close(sfd);
+            return (wcio_status){
+                .code = errno,
+                .error_msg = strerror(errno)
+            };
+        }
 
-    if (connect(sfd, res->ai_addr, res->ai_addrlen) == -1)
-    {
-        free(ctx);
-        close(sfd);
-        freeaddrinfo(res);
-        return (wcio_status){
-            .code = errno,
-            .error_msg = strerror(errno)
-        };
-    }
+        if (connect(sfd, res->ai_addr, res->ai_addrlen) == -1)
+        {
+            free(ctx);
+            close(sfd);
+            freeaddrinfo(res);
+            return (wcio_status){
+                .code = errno,
+                .error_msg = strerror(errno)
+            };
+        }
 
-    char upgrade_header[256] = {0};
+        char upgrade_header[256] = {0};
 
-    uint8_t *ws_key = wcio_gen_secure_key();
-    sprintf(upgrade_header, "GET / HTTP/1.1\r\n"
-                            "Host: %s\r\n"
-                            "Upgrade: websocket\r\n"
-                            "Connection: Upgrade\r\n"
-                            "Sec-WebSocket-Key: %s\r\n"
-                            "Origin: null\r\n"
-                            "Sec-WebSocket-Protocol: soap, wamp\r\n"
-                            "Sec-WebSocket-Version: 13\r\n\r\n", conn_info->addr, ws_key);
-    free(ws_key);
+        uint8_t *ws_key = wcio_gen_secure_key();
+        sprintf(upgrade_header, "GET / HTTP/1.1\r\n"
+                                "Host: %s\r\n"
+                                "Upgrade: websocket\r\n"
+                                "Connection: Upgrade\r\n"
+                                "Sec-WebSocket-Key: %s\r\n"
+                                "Origin: null\r\n"
+                                "Sec-WebSocket-Protocol: soap, wamp\r\n"
+                                "Sec-WebSocket-Version: 13\r\n\r\n", conn_info->addr, ws_key);
+        free(ws_key);
 
-    if (send(sfd, upgrade_header, strlen(upgrade_header), 0) == -1)
-    {
-        printf("Error sending the upgrade header to endpoint, Reason: %s\n", strerror(errno));
-        free(ctx);
-        close(sfd);
-        freeaddrinfo(res);
-        return (wcio_status){
-            .code = errno,
-            .error_msg = strerror(errno)
-        };
-    }
+        if (send(sfd, upgrade_header, strlen(upgrade_header), 0) == -1)
+        {
+            printf("Error sending the upgrade header to endpoint, Reason: %s\n", strerror(errno));
+            free(ctx);
+            close(sfd);
+            freeaddrinfo(res);
+            return (wcio_status){
+                .code = errno,
+                .error_msg = strerror(errno)
+            };
+        }
 
-    uint8_t *recvbuf = (uint8_t*)malloc(WCIO_HANDSHAKE_RECV_BUFFER_SIZE);
-    recvbuf[WCIO_HANDSHAKE_RECV_BUFFER_SIZE - 1] = 0;
+        uint8_t *recvbuf = (uint8_t*)malloc(WCIO_HANDSHAKE_RECV_BUFFER_SIZE);
+        recvbuf[WCIO_HANDSHAKE_RECV_BUFFER_SIZE - 1] = 0;
 
-    int32_t recv_size = recv(sfd, recvbuf, WCIO_HANDSHAKE_RECV_BUFFER_SIZE - 1, 0);
+        int32_t recv_size = recv(sfd, recvbuf, WCIO_HANDSHAKE_RECV_BUFFER_SIZE - 1, 0);
 
-    if (recv_size == -1)
-    {
-        printf("Error receiving the data from the endpoint, Reason: %s\n", strerror(errno));
+        if (recv_size == -1)
+        {
+            printf("Error receiving the data from the endpoint, Reason: %s\n", strerror(errno));
+            free(recvbuf);
+            free(ctx);
+            close(sfd);
+            freeaddrinfo(res);
+            return (wcio_status){
+                .code = errno,
+                .error_msg = strerror(errno)
+            };
+        }
+
+        char *resp_first_field = strchr((char*)recvbuf, '\r');
+        if (!resp_first_field)
+        {
+            free(recvbuf);
+            free(ctx);
+            close(sfd);
+            freeaddrinfo(res);
+            return (wcio_status){
+                .code = errno,
+                .error_msg = strerror(errno)
+            };
+        }
+
+        int32_t len = (uint8_t*)resp_first_field - recvbuf;
+
+        // Extracting server code
+        char arr[40] = {0};
+        strncpy(arr, (char*)recvbuf, len);
+        char *status_code_str = strtok(arr, " ");
+        status_code_str = strtok(NULL, " ");
+        int32_t status_code = atoi(status_code_str);
+
+        if (status_code == 101) {}
+        else
+        {
+            free(recvbuf);
+            free(ctx);
+            close(sfd);
+            freeaddrinfo(res);
+            return (wcio_status){
+                .code = errno,
+                .error_msg = strerror(errno)
+            };
+        }
         free(recvbuf);
-        free(ctx);
-        close(sfd);
-        freeaddrinfo(res);
-        return (wcio_status){
-            .code = errno,
-            .error_msg = strerror(errno)
-        };
-    }
 
-    char *resp_first_field = strchr((char*)recvbuf, '\r');
-    if (!resp_first_field)
+        ctx->addr = res;
+        ctx->conn_info = *conn_info;
+        ctx->socket_fd = sfd;
+
+        *out_ctx = ctx;
+        return WCIO_STATUS_OK;
+    }
+//#ifdef WCIO_ENABLE_OPENSSL
+    else if (conn_info->port == 443)
     {
+        ctx->is_encrypted = 1;
+        wcio_ssl_result ssl_res = wcio_init_ssl_ctx();
+        if (ssl_res.ctx != NULL)
+            ctx->ssl_ctx = ssl_res.ctx;
+
+        ctx->ssl = SSL_new(ctx->ssl_ctx);
+
+        int32_t sfd = socket(AF_INET, SOCK_STREAM, 0);
+        if (sfd == -1)
+        {
+            return (wcio_status){
+                .code = errno,
+                .error_msg = strerror(errno)
+            };
+        }
+
+        struct addrinfo hints = {0}, *res;
+
+        // Conversion of integer valued port into the string
+        char s_port[10] = {0};
+        sprintf(s_port, "%d", conn_info->port);
+
+        int32_t code = getaddrinfo(conn_info->addr, s_port, &hints, &res);
+        if (code != 0)
+        {
+            free(ctx);
+            close(sfd);
+            return (wcio_status){
+                .code = errno,
+                .error_msg = strerror(errno)
+            };
+        }
+
+        if (connect(sfd, res->ai_addr, res->ai_addrlen) == -1)
+        {
+            free(ctx);
+            close(sfd);
+            freeaddrinfo(res);
+            return (wcio_status){
+                .code = errno,
+                .error_msg = strerror(errno)
+            };
+        }
+
+        SSL_set_fd(ctx->ssl, sfd);
+
+        if (SSL_connect(ctx->ssl) == -1)
+        {
+            SSL_shutdown(ctx->ssl);
+            SSL_free(ctx->ssl);
+            free(ctx);
+            close(sfd);
+            freeaddrinfo(res);
+            return (wcio_status){
+                .code = ERR_get_error(),
+                .error_msg = ERR_error_string(ERR_get_error(), NULL)
+            };
+        }
+
+        char upgrade_header[256] = {0};
+
+        uint8_t *ws_key = wcio_gen_secure_key();
+        sprintf(upgrade_header, "GET / HTTP/1.1\r\n"
+                                "Host: %s\r\n"
+                                "Upgrade: websocket\r\n"
+                                "Connection: Upgrade\r\n"
+                                "Sec-WebSocket-Key: %s\r\n"
+                                "Origin: null\r\n"
+                                "Sec-WebSocket-Protocol: soap, wamp\r\n"
+                                "Sec-WebSocket-Version: 13\r\n\r\n", conn_info->addr, ws_key);
+        free(ws_key);
+
+        if (SSL_write(ctx->ssl, upgrade_header, strlen(upgrade_header)) == -1)
+        {
+            printf("Error sending the upgrade header to endpoint, Reason: %s\n", strerror(errno));
+            SSL_shutdown(ctx->ssl);
+            SSL_free(ctx->ssl);
+            free(ctx);
+            close(sfd);
+            freeaddrinfo(res);
+            return (wcio_status){
+                .code = ERR_get_error(),
+                .error_msg = ERR_error_string(ERR_get_error(), NULL)
+            };
+        }
+
+        uint8_t *recvbuf = (uint8_t*)malloc(WCIO_HANDSHAKE_RECV_BUFFER_SIZE);
+        recvbuf[WCIO_HANDSHAKE_RECV_BUFFER_SIZE - 1] = 0;
+
+        int32_t recv_size = SSL_read(ctx->ssl, recvbuf, WCIO_HANDSHAKE_RECV_BUFFER_SIZE - 1);
+
+        if (recv_size == -1)
+        {
+            printf("Error receiving the data from the endpoint, Reason: %s\n", strerror(errno));
+            SSL_shutdown(ctx->ssl);
+            SSL_free(ctx->ssl);
+            free(recvbuf);
+            free(ctx);
+            close(sfd);
+            freeaddrinfo(res);
+            return (wcio_status){
+                .code = ERR_get_error(),
+                .error_msg = ERR_error_string(ERR_get_error(), NULL)
+            };
+        }
+
+        char *resp_first_field = strchr((char*)recvbuf, '\r');
+        if (!resp_first_field)
+        {
+            SSL_shutdown(ctx->ssl);
+            SSL_free(ctx->ssl);
+            free(recvbuf);
+            free(ctx);
+            close(sfd);
+            freeaddrinfo(res);
+            return (wcio_status){
+                .code = errno,
+                .error_msg = strerror(errno)
+            };
+        }
+
+        int32_t len = (uint8_t*)resp_first_field - recvbuf;
+
+        // Extracting server code
+        char arr[40] = {0};
+        strncpy(arr, (char*)recvbuf, len);
+        char *status_code_str = strtok(arr, " ");
+        status_code_str = strtok(NULL, " ");
+        int32_t status_code = atoi(status_code_str);
+
+        if (status_code == 101) {}
+        else
+        {
+            SSL_shutdown(ctx->ssl);
+            SSL_free(ctx->ssl);
+            free(recvbuf);
+            free(ctx);
+            close(sfd);
+            freeaddrinfo(res);
+            return (wcio_status){
+                .code = errno,
+                .error_msg = strerror(errno)
+            };
+        }
         free(recvbuf);
-        free(ctx);
-        close(sfd);
-        freeaddrinfo(res);
-        return (wcio_status){
-            .code = errno,
-            .error_msg = strerror(errno)
-        };
+
+        ctx->addr = res;
+        ctx->conn_info = *conn_info;
+        ctx->socket_fd = sfd;
+
+        *out_ctx = ctx;
+        return WCIO_STATUS_OK;
     }
-
-    int32_t len = (uint8_t*)resp_first_field - recvbuf;
-
-    // Extracting server code
-    char arr[40] = {0};
-    strncpy(arr, (char*)recvbuf, len);
-    char *status_code_str = strtok(arr, " ");
-    status_code_str = strtok(NULL, " ");
-    int32_t status_code = atoi(status_code_str);
-
-    if (status_code == 101) {}
-    else
-    {
-        free(recvbuf);
-        free(ctx);
-        close(sfd);
-        freeaddrinfo(res);
-        return (wcio_status){
-            .code = errno,
-            .error_msg = strerror(errno)
-        };
-    }
-    free(recvbuf);
-
-    ctx->addr = res;
-    ctx->conn_info = *conn_info;
-    ctx->socket_fd = sfd;
-
-    *out_ctx = ctx;
-    return WCIO_STATUS_OK;
+//#endif
 }
 
 wcio_status wcio_close(wcio_ctx *ctx)
@@ -192,19 +367,53 @@ wcio_status wcio_close(wcio_ctx *ctx)
 
 static wcio_write_result wcio_write(wcio_ctx *ctx, uint8_t *data, size_t data_size)
 {
-    int32_t amount_bytes_sent = send(ctx->socket_fd, data, data_size, 0);
-    if (amount_bytes_sent == -1)
+    int32_t bytes_written = 0;
+
+    if (ctx->is_encrypted)
     {
-        return (wcio_write_result){
-            .bytes_written = -1,
-            .status = (wcio_status){
-                .code = errno,
-                .error_msg = strerror(errno)
+        bytes_written = SSL_write(ctx->ssl, data, (int32_t)data_size);
+
+        if (bytes_written <= 0)
+        {
+            int32_t ssl_err = SSL_get_error(ctx->ssl, bytes_written);
+
+            if (ssl_err == SSL_ERROR_WANT_READ || ssl_err == SSL_ERROR_WANT_WRITE)
+            {
+                return (wcio_write_result){
+                    .bytes_written = 0,
+                    .status = WCIO_STATUS_OK
+                };
             }
-        };
+
+            uint64_t err = ERR_get_error();
+
+            return (wcio_write_result){
+                .bytes_written = -1,
+                .status = {
+                    .code = err,
+                    .error_msg = ERR_error_string(err, NULL)
+                }
+            };
+        }
     }
+    else
+    {
+        bytes_written = (int32_t)send(ctx->socket_fd, data, data_size, 0);
+
+        if (bytes_written < 0)
+        {
+            return (wcio_write_result){
+                .bytes_written = -1,
+                .status = {
+                    .code = errno,
+                    .error_msg = strerror(errno)
+                }
+            };
+        }
+    }
+
     return (wcio_write_result){
-        .bytes_written = amount_bytes_sent,
+        .bytes_written = bytes_written,
         .status = WCIO_STATUS_OK
     };
 }
@@ -373,17 +582,51 @@ wcio_status wcio_send_binary(wcio_ctx *ctx, uint8_t *data, size_t data_len)
 
 wcio_read_result wcio_read(wcio_ctx *ctx, size_t read_size, uint8_t *buffer)
 {
-    int32_t bytes_read = read(ctx->socket_fd, buffer, read_size);
-    if (bytes_read == -1)
+    int bytes_read = 0;
+
+    if (ctx->is_encrypted)
     {
-        return (wcio_read_result){
-            .bytes_read = -1,
-            .status = {
-                .code = errno,
-                .error_msg = strerror(errno)
+        bytes_read = SSL_read(ctx->ssl, buffer, (int32_t)read_size);
+
+        if (bytes_read <= 0)
+        {
+            int32_t ssl_err = SSL_get_error(ctx->ssl, bytes_read);
+
+            if (ssl_err == SSL_ERROR_WANT_READ || ssl_err == SSL_ERROR_WANT_WRITE)
+            {
+                return (wcio_read_result){
+                    .bytes_read = 0,
+                    .status = WCIO_STATUS_OK
+                };
             }
-        };
+
+            uint64_t err = ERR_get_error();
+
+            return (wcio_read_result){
+                .bytes_read = -1,
+                .status = {
+                    .code = err,
+                    .error_msg = ERR_error_string(err, NULL)
+                }
+            };
+        }
     }
+    else
+    {
+        bytes_read = (int32_t)read(ctx->socket_fd, buffer, read_size);
+
+        if (bytes_read < 0)
+        {
+            return (wcio_read_result){
+                .bytes_read = -1,
+                .status = {
+                    .code = errno,
+                    .error_msg = strerror(errno)
+                }
+            };
+        }
+    }
+
     return (wcio_read_result){
         .bytes_read = bytes_read,
         .status = WCIO_STATUS_OK

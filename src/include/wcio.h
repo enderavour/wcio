@@ -6,9 +6,7 @@
 #include <stddef.h>
 
 #include "status.h"
-
-// Opaque data structure, session handle
-typedef struct _wcio_ctx wcio_ctx;
+#include <openssl/ssl.h>
 
 // Information about the endpoint to connect.
 typedef struct
@@ -16,6 +14,9 @@ typedef struct
     const char *addr;
     int32_t port;
 } wcio_connect_info;
+
+// Opaque data structure, session handle
+typedef struct _wcio_ctx wcio_ctx;
 
 // Establishes socket connection with endpoint, upgrades it to websocket
 wcio_status wcio_connect(wcio_ctx **out_ctx, wcio_connect_info *conn_info);
