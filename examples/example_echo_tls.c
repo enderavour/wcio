@@ -7,7 +7,7 @@ int32_t main()
 {
     wcio_connect_info conn_info = {
         .addr = "websocket-echo.com",
-        .port = 80
+        .port = 443
     };
     wcio_ctx *ctx;
     wcio_status stat = wcio_connect(&ctx, &conn_info);
@@ -16,7 +16,7 @@ int32_t main()
         printf("Error establishing connection: %s", stat.error_msg);
         return stat.code;
     }
-    wcio_send_text(ctx, "Hello from unencrypted connection!");
+    wcio_send_text(ctx, "Hello from encrypted connection!");
     size_t msg_len = 0;
     char *res = wcio_recv(ctx, &msg_len);
     printf("%s\n", res);

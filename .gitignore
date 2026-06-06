@@ -3,3 +3,5 @@
 bin/
 wslib.dSYM/
 libwcio.dylib
+libwcio.dylib.dSYM/
+wcio.pem

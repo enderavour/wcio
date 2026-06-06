@@ -22,7 +22,7 @@ make
 make install
 ```
 4. Build examples:
-```
+```bash
 make examples
 ```
 
@@ -31,3 +31,4 @@ make examples
 - Some parts of the code may segfault/work unexpectedly on ARM or other architectures
 - wcio_send_binary was implemented
 - More functions were rewritten using ws_status as return value.
+- Added SSL support and encrypted connection.
