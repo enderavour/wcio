@@ -91,14 +91,17 @@ wcio_status wcio_connect(wcio_ctx **out_ctx, wcio_connect_info *conn_info)
         char upgrade_header[256] = {0};
 
         uint8_t *ws_key = wcio_gen_secure_key();
-        sprintf(upgrade_header, "GET / HTTP/1.1\r\n"
+        sprintf(upgrade_header, "GET %s HTTP/1.1\r\n"
                                 "Host: %s\r\n"
                                 "Upgrade: websocket\r\n"
                                 "Connection: Upgrade\r\n"
                                 "Sec-WebSocket-Key: %s\r\n"
                                 "Origin: null\r\n"
                                 "Sec-WebSocket-Protocol: soap, wamp\r\n"
-                                "Sec-WebSocket-Version: 13\r\n\r\n", conn_info->addr, ws_key);
+                                "Sec-WebSocket-Version: 13\r\n\r\n"
+                                "%s",
+                                conn_info->url == NULL ? "/" : conn_info->url,
+        conn_info->addr, ws_key, conn_info->body);
         free(ws_key);
 
         if (send(sfd, upgrade_header, strlen(upgrade_header), 0) == -1)
@@ -783,4 +786,111 @@ wcio_status wcio_send_pong(wcio_ctx *ctx, const char *content)
     wcio_write_result wr_rs = wcio_write(ctx, raw_frame, rs_frame_sz);
     free(raw_frame);
     return wr_rs.status;
+}
+
+static char *wcio_strndup(const char *s, size_t n)
+{
+    char *out = (char *)malloc(n + 1);
+    if (!out) return NULL;
+
+    memcpy(out, s, n);
+    out[n] = '\0';
+    return out;
+}
+
+wcio_connect_info *wcio_parse_url(const char *url)
+{
+    if (!url) return NULL;
+
+    wcio_connect_info *inf = (wcio_connect_info*)calloc(1, sizeof(*inf));
+    if (!inf) return NULL;
+
+    const char *p = url;
+
+    if (strncmp(p, "ws://", 5) == 0)
+    {
+        inf->port = 80;
+        p += 5;
+    }
+    else if (strncmp(p, "wss://", 6) == 0)
+    {
+        inf->port = 443;
+        p += 6;
+    }
+    else
+    {
+        free(inf);
+        return NULL;
+    }
+
+    const char *host_begin = p;
+
+    while (*p && *p != ':' && *p != '/' && *p != '?')
+        p++;
+
+    inf->addr = wcio_strndup(host_begin, p - host_begin);
+
+    if (*p == ':')
+    {
+        p++;
+        int port = 0;
+
+        while (*p >= '0' && *p <= '9')
+        {
+            port = port * 10 + (*p - '0');
+            p++;
+        }
+
+        if (port > 0 && port <= 65535)
+            inf->port = port;
+    }
+
+    if (*p == '/')
+    {
+        const char *path_begin = p;
+
+        while (*p && *p != '?')
+            p++;
+
+        inf->url = wcio_strndup(path_begin, p - path_begin);
+    }
+    else
+    {
+        inf->url = strdup("/");
+    }
+
+    if (*p == '?')
+    {
+        p++;
+        inf->body = strdup(p);
+    }
+    else
+    {
+        inf->body = NULL;
+    }
+
+    return inf;
+}
+
+void wcio_connect_info_free(wcio_connect_info *info)
+{
+    if (!info)
+        return;
+
+    if (info->addr) free((void*)info->addr);
+    if (info->body) free((void*)info->body);
+    if (info->url)  free((void*)info->url);
+
+    free(info);
+}
+
+wcio_ctx *wcio_ctx_alloc()
+{
+    wcio_ctx *ctx = (wcio_ctx*)calloc(1, sizeof(wcio_ctx));
+    return ctx;
+}
+
+void wcio_ctx_free(wcio_ctx *ctx)
+{
+    free(ctx);
 }

@@ -33,3 +33,4 @@ make examples
 - More functions were rewritten using ws_status as return value.
 - Added SSL support and encrypted connection.
 - Added example with encrypted connection.
+- WS URL parsing was added.

@@ -26,7 +26,7 @@ install:
 	cp -r ./src/include/* $(INCPATH)
 
 debug: $(SRC)
-	$(CC) -g -fPIC -shared $(SRC) -o $(TARGET)
+	$(CC) -I$(OPENSSL_INCPATH) -g -fPIC -shared -L$(OPENSSL_LIBPATH) $(SRC) -o $(TARGET) -lssl -lcrypto
 
 clean:
 	rm -rf $(TARGET) bin

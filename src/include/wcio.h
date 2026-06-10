@@ -13,10 +13,17 @@ typedef struct
 {
     const char *addr;
     int32_t port;
+    const char *url;
+    const char *body;
 } wcio_connect_info;
 
 // Opaque data structure, session handle
 typedef struct _wcio_ctx wcio_ctx;
+
+// Allocate empty dynamic wcio structure
+wcio_ctx *wcio_ctx_alloc();
+// Free empty dynamic wcio structure
+void wcio_ctx_free(wcio_ctx *ctx);
 
 // Establishes socket connection with endpoint, upgrades it to websocket
 wcio_status wcio_connect(wcio_ctx **out_ctx, wcio_connect_info *conn_info);
@@ -50,5 +57,8 @@ typedef struct
 wcio_read_result wcio_read(wcio_ctx *ctx, size_t read_size, uint8_t *buffer);
 // Receives frame(s), composes them together and returns the payload of the frame(s)
 char *wcio_recv(wcio_ctx *conn, size_t *out_len);
+
+wcio_connect_info *wcio_parse_url(const char *url);
+void wcio_connect_info_free(wcio_connect_info *info);
 
 #endif
