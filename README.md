@@ -34,3 +34,4 @@ make examples
 - Added SSL support and encrypted connection.
 - Added example with encrypted connection.
 - WS URL parsing was added.
+- Fixed issue with URL parsing example. The resource was unavailable, so it was simply changed

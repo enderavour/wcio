@@ -98,10 +98,9 @@ wcio_status wcio_connect(wcio_ctx **out_ctx, wcio_connect_info *conn_info)
                                 "Sec-WebSocket-Key: %s\r\n"
                                 "Origin: null\r\n"
                                 "Sec-WebSocket-Protocol: soap, wamp\r\n"
-                                "Sec-WebSocket-Version: 13\r\n\r\n"
-                                "%s",
+                                "Sec-WebSocket-Version: 13\r\n\r\n",
                                 conn_info->url == NULL ? "/" : conn_info->url,
-        conn_info->addr, ws_key, conn_info->body);
+        conn_info->addr, ws_key);
         free(ws_key);
 
         if (send(sfd, upgrade_header, strlen(upgrade_header), 0) == -1)

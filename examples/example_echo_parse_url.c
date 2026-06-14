@@ -5,7 +5,7 @@
 
 int32_t main()
 {
-    wcio_connect_info *pinfo = wcio_parse_url("ws://ws.ifelse.io");
+    wcio_connect_info *pinfo = wcio_parse_url("ws://websocket-echo.com");
     wcio_ctx *ctx = wcio_ctx_alloc();
     wcio_status stat = wcio_connect(&ctx, pinfo);
     if (!WCIO_IS_OK(stat))
